@@ -2,7 +2,7 @@
  * Names: Kyle Ritchie, Emmett Hitz, Daniel Centore, Adam Stanczyk
  * Section: 4A
  * Date: 2015
- * Filename: lab4.c
+ * Filename: lab5.c
  * Description: TODO
  */
 
@@ -34,22 +34,23 @@ void PCA_Init (void);
 void XBR0_Init(void);
 void SMB0_Init(void);
 void ADC_Init(void);
+
+void Pick_S_Gain(void);
 void Pick_Heading(void);
+
 void Adjust_Wheels(void);
 void Drive_Motor(void);
-unsigned int Read_Compass(void);
-unsigned int Read_Ranger(void);
-unsigned char read_AD_input(unsigned char n);
-void Ping_Ranger(void);
+
+unsigned int Read_Accel(void);
+
 void PCA_ISR(void) __interrupt 9;
-void Update_Battery(void);
-void Pick_S_Gain(void);
-void Update_Speed(void);
-void Update_Speed(void);
-void Process(void);
-unsigned int Read_Compass(void);
+
 void Paused_LCD(void);
 void Update_LCD(void);
+void Update_Battery(void);
+// void Update_Speed(void);
+
+void Process(void);
 void Steering_Goal(void);
 void printDebug(void);
 
@@ -67,15 +68,19 @@ unsigned int current_range = 0;           // The most recent ranger distance (cm
 
 unsigned int wait = 0;                    // Elapsed 20ms ticks
 
-unsigned char new_heading_flag = 0;       // Flag to indicate new heading available (40ms)
-unsigned char new_range_flag = 0;         // Flag to indicate new range available (80ms)
 unsigned char new_battery_flag = 0;       // Flag to indicate new battery voltage (1s)
 unsigned char new_LCD_flag = 0;           // Flag to indicate we should update the LCD (400ms)
+unsigned char new_accel_flag = 0;
 
-unsigned char r_count = 0;                // overflow count for range
-unsigned char h_count = 0;                // overflow count for heading
 unsigned char b_count = 0;                // overflow count for battery reading
 unsigned char l_count = 0;                // overflow count for LCD reading
+unsigned char a_count = 0;
+
+unsigned char i_accel = 0;
+signed int x_accel[8]; 
+signed int y_accel[8];
+signed int avg_X;
+signed int avg_Y;
 
 signed int current_heading = 0;           // The most recent compass heading (10*degrees)
 signed int desired_heading = 0;           // The desired compass heading (from keypad)
@@ -106,7 +111,7 @@ void main()
 	Pick_S_Gain();
 	
 	// Updates the speed from potentiometer
-	Update_Speed();
+	// Update_Speed();
 	
 	// Run main loop
 	while (1)
@@ -133,36 +138,18 @@ void Process()
 			}
 		}
 	}
-
-	// If there's a new heading available, read it and update the current value
-	// Every 40ms
-	if (new_heading_flag)
-	{
-		current_heading = Read_Compass();
-		new_heading_flag = 0;
-	}
 	
-	// If there's a new range available, read it and update the current value.
-	// Also, update drive speed and actual steering
-	// Every 80ms
-	if (new_range_flag)
+	if (new_accel_flag)
 	{
-		// Update drive speed and actual steering
+		Read_Accel();
 		Drive_Motor();
-		
-		// Read ranger value and ping again
-		current_range = Read_Ranger();
-		Ping_Ranger();
-		
-		new_range_flag = 0;
+		new_accel_flag = 0;
 	}
 	
 	// Update battery and speed from ADC (every 1s)
 	if (new_battery_flag)
 	{
 		Update_Battery();
-		Update_Speed();
-		
 		new_battery_flag = 0;
 	}
 	
@@ -217,7 +204,7 @@ void Drive_Motor(void)
 {
 	unsigned int temp_steer_pw;
 	
-	
+	//TODO: fix this logic to use accelerometer readingsn
 	if (current_range >= DIST_MAX)
 	{
 		// Range far away
@@ -346,58 +333,6 @@ void ADC_Init(void)
 	ADC1CN = 0x80;
 }
 
-// Read current compass heading
-unsigned int Read_Compass(void)
-{
-	unsigned char addr = 0xC0; // the address of the sensor, 0xC0 for the compass
-	unsigned char Data[2]; // Data is an array with a length of 2
-	unsigned int heading; // the heading returned in degrees between 0 and 3599
-	i2c_read_data(addr, 2, Data, 2); // read two byte, starting at reg 2
-	heading =(((unsigned int) Data[0] << 8) | Data[1]); //combine the two values
-	//heading has units of 1/10 of a degree 
-	return heading; // the heading returned in degrees between 0 and 3599
-}
-
-// Read current ranger heading
-unsigned int Read_Ranger(void)
-{
-	unsigned char Data[2];
-	unsigned int range = 0;
-	// the address of the ranger is 0xE0
-	unsigned char addr = 0xE0;
-	i2c_read_data(addr, 2, Data, 2); // read two bytes, starting at reg 2
-	range = (((unsigned int) Data[0] << 8) | Data[1]);
-	
-	return range;
-}
-
-// Instruct ranger to send a ping
-void Ping_Ranger(void)
-{	
-	// write 0x51 to reg 0 of the ranger:
-	unsigned char Data[1];
-	unsigned char addr = 0xE0;
-	Data[0] = 0x51;
-	i2c_write_data(addr, 0, Data , 1) ; // write one byte of data to reg 0 at addr
-}
-
-// Reads current speed PW from pot
-void Update_Speed(void)
-{
-	AMX1SL = 5; // Set P1.n as the analog input for ADC1
-	
-	printf("# SWITCHING TO POT CHANNEL...\r\n");
-	//printf("# SWITCHING TO POT CHANNEL...\r\n");
-	
-	ADC1CN = ADC1CN & ~0x20; // Clear the “Conversion Completed” flag
-	ADC1CN = ADC1CN | 0x10; // Initiate A/D conversion
-	while ((ADC1CN & 0x20) == 0x00);// Wait for conversion to complete
-	//speed_from_pot = ((DRIVE_PW_MAX-DRIVE_PW_MIN)/255)*ADC1+DRIVE_PW_MIN; 
-	//printf("ADC1: %d\r\n", ADC1);
-	speed_from_pot = ((unsigned long) (3502 - 2028) * (unsigned long) ADC1) / (unsigned long) 255 + (unsigned long) 2028;
-	//speed_from_pot = ADC1;
-}
-
 // Reads current battery 0-255 from ADC
 void Update_Battery(void)
 {
@@ -414,6 +349,11 @@ void Update_Battery(void)
 	printf("# Battery level: %u\r\n", battery_level);
 }
 
+unsigned int Read_Accel(void)
+{
+
+}
+
 void PCA_ISR(void) __interrupt 9
 {
 	++wait;
@@ -422,20 +362,6 @@ void PCA_ISR(void) __interrupt 9
 	{
 		CF = 0;
 		PCA0 = PCA_START;
-		
-		++h_count;
-		if (h_count >= 2)		// 40 ms
-		{
-			new_heading_flag = 1;
-			h_count = 0;
-		}
-		
-		++r_count;
-		if (r_count >= 4)		// 80 ms
-		{
-			new_range_flag = 1;
-			r_count = 0;
-		}
 		
 		++l_count;
 		if (l_count >= 20)		// 400 ms
@@ -449,6 +375,13 @@ void PCA_ISR(void) __interrupt 9
 		{
 			new_battery_flag = 1;
 			b_count = 0;
+		}
+
+		++a_count;
+		if (a_count>=1)
+		{
+			new_accel_flag = 1;
+			a_count = 0;
 		}
 	}
 
