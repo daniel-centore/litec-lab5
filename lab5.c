@@ -19,6 +19,9 @@
 #define STEER_PW_NEUT 2785
 #define STEER_PW_MAX 3295
 
+#define NEUTRAL_X (-26)
+#define NEUTRAL_Y (-40)
+
 #define PCA_START 28672
 
 #define DIST_MAX (55 + 14)				// Distance to begin steering at
@@ -41,30 +44,31 @@ void Pick_Heading(void);
 void Adjust_Wheels(void);
 void Drive_Motor(void);
 
-unsigned int Read_Accel(void);
+void Read_Accel(void);
 
 void PCA_ISR(void) __interrupt 9;
 
 void Paused_LCD(void);
 void Update_LCD(void);
 void Update_Battery(void);
-// void Update_Speed(void);
+
+void set_servo_PWM(void);
+void set_drive_PWM(void);
 
 void Process(void);
 void Steering_Goal(void);
 void printDebug(void);
 
+void setGains(void);
+
 //-----------------------------------------------------------------------------
 // Global Variables
 //-----------------------------------------------------------------------------
 
-unsigned int speed_from_pot = 0;          // The pulsewidth as calculated by the pot value
 unsigned char battery_level = 0;          // Battery voltage in volts
 
 unsigned int drive_pw = DRIVE_PW_NEUT;    // The actual pulsewidth we are driving at
 unsigned int steer_pw = STEER_PW_NEUT;    // The actual pulsewidth we are steering at
-
-unsigned int current_range = 0;           // The most recent ranger distance (cm)
 
 unsigned int wait = 0;                    // Elapsed 20ms ticks
 
@@ -74,18 +78,17 @@ unsigned char new_accel_flag = 0;
 
 unsigned char b_count = 0;                // overflow count for battery reading
 unsigned char l_count = 0;                // overflow count for LCD reading
-unsigned char a_count = 0;
+unsigned char a_count = 0;                // overflow count for accelerometer
 
 unsigned char i_accel = 0;
-signed int x_accel[8]; 
-signed int y_accel[8];
+signed int x_accel[4]; 
+signed int y_accel[4];
 signed int avg_X;
 signed int avg_Y;
 
-signed int current_heading = 0;           // The most recent compass heading (10*degrees)
-signed int desired_heading = 0;           // The desired compass heading (from keypad)
-
-unsigned char steering_gain = 0;          // The steering gain (from keypad)
+unsigned char steering_gain = 2;          // The steering gain (from keypad)
+unsigned char drive_x_gain = 2;          // The steering gain (from keypad)
+unsigned char drive_y_gain = 2;          // The steering gain (from keypad)
 
 __sbit __at 0xB7 RUN;                     // Run switch
 
@@ -93,6 +96,8 @@ __sbit __at 0xB7 RUN;                     // Run switch
 
 void main()
 {
+	unsigned char i = 0;
+	
 	Sys_Init(); // Initialize the C8051 board
 	putchar(' '); // Required for output to terminal
 	Port_Init(); 
@@ -100,15 +105,23 @@ void main()
 	ADC_Init();
 	XBR0_Init();
 	SMB0_Init();
+	Accel_Init();
 	
 	printf("\r\nSTART\r\n");
+	
+	for (i = 0; i < 4; ++i)
+	{
+		x_accel[i] = 0;
+		y_accel[i] = 0;
+	}
 	
 	// Wait for ADC and motors to be ready
 	while (wait < 50);
 	
 	// Select heading and steering gain from keypad
-	Pick_Heading();
-	Pick_S_Gain();
+	//Pick_Heading();
+	//Pick_S_Gain();
+	setGains();
 	
 	// Updates the speed from potentiometer
 	// Update_Speed();
@@ -142,7 +155,11 @@ void Process()
 	if (new_accel_flag)
 	{
 		Read_Accel();
-		Drive_Motor();
+		
+		//printf("Avg X: %d      Avg Y: %d\r\n", avg_X, avg_Y);
+		set_servo_PWM();
+		set_drive_PWM();
+		
 		new_accel_flag = 0;
 	}
 	
@@ -161,6 +178,39 @@ void Process()
 	}
 }
 
+void set_servo_PWM(void)
+{
+	if (avg_X > (0xFFFF - STEER_PW_NEUT) / steering_gain)
+		steer_pw = STEER_PW_MAX;
+	if (avg_X < (-STEER_PW_NEUT) / steering_gain)
+		steer_pw = STEER_PW_MIN;
+	else
+	{
+		steer_pw = STEER_PW_NEUT + steering_gain * avg_X;
+		
+		if (steer_pw > STEER_PW_MAX)
+			steer_pw = STEER_PW_MAX;
+		if (steer_pw < STEER_PW_MIN)
+			steer_pw = STEER_PW_MIN;
+	}
+	
+	// Update PCA pulsewidth steering
+    PCA0CP0 = 0xFFFF - steer_pw;
+}
+
+void set_drive_PWM(void)
+{
+	drive_pw = DRIVE_PW_NEUT - drive_y_gain * avg_Y + drive_x_gain * abs(avg_X);
+	
+	if (drive_pw > DRIVE_PW_MAX)
+		drive_pw = DRIVE_PW_MAX;
+	if (drive_pw < DRIVE_PW_MIN)
+		drive_pw = DRIVE_PW_MIN;
+	
+	// Actually update drive pw
+	PCA0CP2 = 0xFFFF - drive_pw;
+}
+
 // Print "Car ready" to the LCD
 void Paused_LCD(void)
 {
@@ -172,120 +222,48 @@ void Paused_LCD(void)
 void Update_LCD(void)
 {
 	lcd_clear();
-	lcd_print("Heading: %d\n", current_heading / 10);
-	lcd_print("Range: %d\n", current_range);
+	//lcd_print("Heading: %d\n", current_heading / 10);
+	//lcd_print("Range: %d\n", current_range);
 	lcd_print("Steer: %ld%%\n", ((signed long) 100 * (signed long) ((signed long) steer_pw - (signed long) STEER_PW_NEUT)) / (signed long) (STEER_PW_MAX - STEER_PW_NEUT));
 	lcd_print("Battery: %d\n", 15 * battery_level / 244);
 }
 
-// Asks the user for the desired heading
-void Pick_Heading(void)
-{
-	do {
-		lcd_clear();
-		lcd_print("Heading (0-360):");
-			
-		desired_heading = kpd_input(1) * 10;
-	} while (desired_heading > 3600);
-	
-}
-
 // Asks user for steering gain
-void Pick_S_Gain(void)
+void setGains(void)
 {
 	lcd_clear();
-	lcd_print("Steering Gain (~33):");
+	lcd_print("Steering Gain (~3):");
 		
 	steering_gain = kpd_input(1);
-}
-
-// Actually choose drive speed and steering angle
-void Drive_Motor(void)
-{
-	unsigned int temp_steer_pw;
 	
-	//TODO: fix this logic to use accelerometer readingsn
-	if (current_range >= DIST_MAX)
-	{
-		// Range far away
-		// Going toward desired heading at speed from potentiometer
-		drive_pw = speed_from_pot;
-		Steering_Goal();
-	}
-	else if (current_range <= DIST_STOP || (current_range <= DIST_AVOID_MIN && steer_pw == STEER_PW_MIN))
-	{
-		// Range really close
-		// Stop and leave steering at previous value
-		drive_pw = DRIVE_PW_NEUT;
-	}
-	else
-	{
-		// Range at medium distance (ie obstacle detected but not too close)
-		// Steering around obstacle
+	lcd_clear();
+	lcd_print("Drive X Gain (~3):");
 		
-		// Drive speed from pot
-		drive_pw = speed_from_pot;
-		
-		// Calculate steering to go around obstacle
-		temp_steer_pw = (STEER_PW_NEUT - steering_gain * (DIST_MAX - current_range));
-		
-		// Calculate steering toward heading for comparison
-		Steering_Goal();
-		
-		// Only adjust the steering for the obstacle if the steering to go around the obstacle is
-		//   more extreme than the steering to just continue toward the heading
-		if (temp_steer_pw < steer_pw)
-			steer_pw = temp_steer_pw;
-	}
+	drive_x_gain = kpd_input(1);
 	
-	// Actually update drive pw
-	PCA0CP2 = 0xFFFF - drive_pw;
-	
-	// Make sure our desired steering pulsewidth is within the maximum bounds of the servo
-	if (steer_pw > STEER_PW_MAX)
-		steer_pw = STEER_PW_MAX;
-	else if (steer_pw < STEER_PW_MIN)
-		steer_pw = STEER_PW_MIN;
-	
-	// Update PCA pulsewidth steering
-    PCA0CP0 = 0xFFFF - steer_pw;
-    
-    // Print debug information to the console
-    printDebug();
+	lcd_clear();
+	lcd_print("Drive Y Gain (~3):");
+		
+	drive_y_gain = kpd_input(1);
 }
 
 void printDebug(void)
 {
-	// Figure out the current error based on the desired and current heading
-	signed int steer_error = (signed int) desired_heading - (signed int) current_heading;	
-	// Shift the error to be between -1800 and 1800
-	if (steer_error > 1800)
-		steer_error -= 3600;
-	else if (steer_error < -1800)
-		steer_error += 3600;
+	//// Figure out the current error based on the desired and current heading
+	//signed int steer_error = (signed int) desired_heading - (signed int) current_heading;	
+	//// Shift the error to be between -1800 and 1800
+	//if (steer_error > 1800)
+		//steer_error -= 3600;
+	//else if (steer_error < -1800)
+		//steer_error += 3600;
 		
-	printf("%d, %d, %d, %d, %ld\r\n"
-			, wait * 20// + ((PCA0 - PCA_START) / (65535 - PCA_START)) * 20
-			, steer_error
-			, current_range
-			, current_heading
-			, ((signed long) 100 * (signed long) ((signed long) steer_pw - (signed long) STEER_PW_NEUT)) / (signed long) (STEER_PW_MAX - STEER_PW_NEUT)
-		);
-}
-
-// Adjust steering pulsewidth toward desired steering
-void Steering_Goal(void)
-{
-	// Figure out the current error based on the desired and current heading
-	signed int error = (signed int) desired_heading - (signed int) current_heading;	
-	// Shift the error to be between -1800 and 1800
-	if (error > 1800)
-		error -= 3600;
-	else if (error < -1800)
-		error += 3600;
-	
-	// Figure out our desired pulsewidth using our value for k_p
-	steer_pw = STEER_PW_NEUT + 5 * error / 12;
+	//printf("%d, %d, %d, %d, %ld\r\n"
+			//, wait * 20// + ((PCA0 - PCA_START) / (65535 - PCA_START)) * 20
+			//, steer_error
+			//, current_range
+			//, current_heading
+			//, ((signed long) 100 * (signed long) ((signed long) steer_pw - (signed long) STEER_PW_NEUT)) / (signed long) (STEER_PW_MAX - STEER_PW_NEUT)
+		//);
 }
 
 // Initialize ports
@@ -349,9 +327,27 @@ void Update_Battery(void)
 	printf("# Battery level: %u\r\n", battery_level);
 }
 
-unsigned int Read_Accel(void)
+void Read_Accel(void)
 {
-
+	unsigned char addr = 0x30;
+	unsigned char Data[4];
+	
+	i2c_read_data(addr, 0x27, Data, 1);
+	
+	if ((Data[0] & 0x03) != 0x03)
+		return;
+	
+	i2c_read_data(addr, 0x28 | 0x80, Data, 4);
+	
+	++i_accel;
+	if (i_accel >= 4)
+		i_accel = 0;
+		
+	x_accel[i_accel] = ((Data[1] << 8) >> 4) - NEUTRAL_X;
+	y_accel[i_accel] = ((Data[3] << 8) >> 4) - NEUTRAL_Y;
+	
+	avg_X = (x_accel[0] + x_accel[1] + x_accel[2] + x_accel[3]) / 4;
+	avg_Y = (y_accel[0] + y_accel[1] + y_accel[2] + y_accel[3]) / 4;
 }
 
 void PCA_ISR(void) __interrupt 9
@@ -377,12 +373,7 @@ void PCA_ISR(void) __interrupt 9
 			b_count = 0;
 		}
 
-		++a_count;
-		if (a_count>=1)
-		{
-			new_accel_flag = 1;
-			a_count = 0;
-		}
+		new_accel_flag = 1;		// 20 ms
 	}
 
 	PCA0CN &= 0xC0;
