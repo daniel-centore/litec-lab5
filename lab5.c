@@ -75,10 +75,11 @@ unsigned int wait = 0;                    // Elapsed 20ms ticks
 unsigned char new_battery_flag = 0;       // Flag to indicate new battery voltage (1s)
 unsigned char new_LCD_flag = 0;           // Flag to indicate we should update the LCD (400ms)
 unsigned char new_accel_flag = 0;
+unsigned char new_debug_flag = 0;
 
 unsigned char b_count = 0;                // overflow count for battery reading
 unsigned char l_count = 0;                // overflow count for LCD reading
-unsigned char a_count = 0;                // overflow count for accelerometer
+unsigned char d_count = 0;                // overflow count for printing to debug
 
 unsigned char i_accel = 0;
 signed int x_accel[4]; 
@@ -118,13 +119,10 @@ void main()
 	// Wait for ADC and motors to be ready
 	while (wait < 50);
 	
-	// Select heading and steering gain from keypad
-	//Pick_Heading();
-	//Pick_S_Gain();
+	// Select gains from keypad
 	setGains();
 	
-	// Updates the speed from potentiometer
-	// Update_Speed();
+	printf("Gains: S: %d Dx: %d Dy: %d\r\n", steering_gain, drive_x_gain, drive_y_gain);
 	
 	// Run main loop
 	while (1)
@@ -156,7 +154,6 @@ void Process()
 	{
 		Read_Accel();
 		
-		//printf("Avg X: %d      Avg Y: %d\r\n", avg_X, avg_Y);
 		set_servo_PWM();
 		set_drive_PWM();
 		
@@ -176,36 +173,49 @@ void Process()
 		Update_LCD();
 		new_LCD_flag = 0;
 	}
+	
+	if (new_debug_flag)
+	{
+		printDebug();
+		new_debug_flag = 0;
+	}
 }
 
+// Sets the PWM of the servo based on horizontal tilt
 void set_servo_PWM(void)
 {
-	if (avg_X > (0xFFFF - STEER_PW_NEUT) / steering_gain)
-		steer_pw = STEER_PW_MAX;
-	if (avg_X < (-STEER_PW_NEUT) / steering_gain)
-		steer_pw = STEER_PW_MIN;
-	else
-	{
-		steer_pw = STEER_PW_NEUT + steering_gain * avg_X;
+	unsigned long temp;
+	
+	// Calculate the pulsewidth given the horizontal tilt
+	temp = (long) STEER_PW_NEUT + (long) steering_gain * (long) avg_X;
+	
+	// Make sure the pulsewidth is within the bounds
+	if (temp > STEER_PW_MAX)
+		temp = STEER_PW_MAX;
+	if (temp < STEER_PW_MIN)
+		temp = STEER_PW_MIN;
 		
-		if (steer_pw > STEER_PW_MAX)
-			steer_pw = STEER_PW_MAX;
-		if (steer_pw < STEER_PW_MIN)
-			steer_pw = STEER_PW_MIN;
-	}
+	temp = steer_pw;
 	
 	// Update PCA pulsewidth steering
     PCA0CP0 = 0xFFFF - steer_pw;
 }
 
+// Sets the PWM of the drive motor based on horizontal and vertical tilts
 void set_drive_PWM(void)
 {
-	drive_pw = DRIVE_PW_NEUT - drive_y_gain * avg_Y + drive_x_gain * abs(avg_X);
+	unsigned long temp;
 	
-	if (drive_pw > DRIVE_PW_MAX)
-		drive_pw = DRIVE_PW_MAX;
-	if (drive_pw < DRIVE_PW_MIN)
-		drive_pw = DRIVE_PW_MIN;
+	// Calculate the pulsewidth given the horizontal and vertical tilts
+	temp = (long) DRIVE_PW_NEUT - (long) drive_y_gain * avg_Y + (long) drive_x_gain * abs(avg_X);
+	
+	// Make sure the pulsewidth is within the bounds
+	if (temp > DRIVE_PW_MAX)
+		temp = DRIVE_PW_MAX;
+	if (temp < DRIVE_PW_MIN)
+		temp = DRIVE_PW_MIN;
+	
+	drive_pw = temp;
 	
 	// Actually update drive pw
 	PCA0CP2 = 0xFFFF - drive_pw;
@@ -222,10 +232,10 @@ void Paused_LCD(void)
 void Update_LCD(void)
 {
 	lcd_clear();
-	//lcd_print("Heading: %d\n", current_heading / 10);
-	//lcd_print("Range: %d\n", current_range);
-	lcd_print("Steer: %ld%%\n", ((signed long) 100 * (signed long) ((signed long) steer_pw - (signed long) STEER_PW_NEUT)) / (signed long) (STEER_PW_MAX - STEER_PW_NEUT));
-	lcd_print("Battery: %d\n", 15 * battery_level / 244);
+	lcd_print("gX:  %d\n", avg_X);
+	lcd_print("gY:  %d\n", avg_Y);
+	lcd_print("sPW: %d\n", steer_pw);
+	lcd_print("dPW: %d%%\n", drive_pw);
 }
 
 // Asks user for steering gain
@@ -257,13 +267,13 @@ void printDebug(void)
 	//else if (steer_error < -1800)
 		//steer_error += 3600;
 		
-	//printf("%d, %d, %d, %d, %ld\r\n"
-			//, wait * 20// + ((PCA0 - PCA_START) / (65535 - PCA_START)) * 20
-			//, steer_error
-			//, current_range
-			//, current_heading
-			//, ((signed long) 100 * (signed long) ((signed long) steer_pw - (signed long) STEER_PW_NEUT)) / (signed long) (STEER_PW_MAX - STEER_PW_NEUT)
-		//);
+	printf("%d, %d, %d, %d, %d\r\n"
+			, wait * 20
+			, avg_X
+			, avg_Y
+			, steer_pw
+			, drive_pw
+		);
 }
 
 // Initialize ports
@@ -371,6 +381,13 @@ void PCA_ISR(void) __interrupt 9
 		{
 			new_battery_flag = 1;
 			b_count = 0;
+		}
+		
+		++d_count;
+		if (d_count >= 3)		// 60 ms
+		{
+			new_debug_flag = 1;
+			d_count = 0;
 		}
 
 		new_accel_flag = 1;		// 20 ms
