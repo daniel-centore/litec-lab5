@@ -19,8 +19,8 @@
 #define STEER_PW_NEUT 2785
 #define STEER_PW_MAX 3295
 
-#define NEUTRAL_X (-26)
-#define NEUTRAL_Y (-40)
+#define NEUTRAL_X (28)
+#define NEUTRAL_Y (-8)
 
 #define PCA_START 28672
 
@@ -82,8 +82,8 @@ unsigned char l_count = 0;                // overflow count for LCD reading
 unsigned char d_count = 0;                // overflow count for printing to debug
 
 unsigned char i_accel = 0;
-signed int x_accel[4]; 
-signed int y_accel[4];
+signed int x_accel[5]; 
+signed int y_accel[5];
 signed int avg_X;
 signed int avg_Y;
 
@@ -184,7 +184,7 @@ void Process()
 // Sets the PWM of the servo based on horizontal tilt
 void set_servo_PWM(void)
 {
-	unsigned long temp;
+	long temp;
 	
 	// Calculate the pulsewidth given the horizontal tilt
 	temp = (long) STEER_PW_NEUT + (long) steering_gain * (long) avg_X;
@@ -194,8 +194,10 @@ void set_servo_PWM(void)
 		temp = STEER_PW_MAX;
 	if (temp < STEER_PW_MIN)
 		temp = STEER_PW_MIN;
+	if (temp < STEER_PW_NEUT * 11 / 10 && temp > STEER_PW_NEUT * 9 / 10)
+		temp = STEER_PW_NEUT;
 		
-	temp = steer_pw;
+	steer_pw = temp;
 	
 	// Update PCA pulsewidth steering
     PCA0CP0 = 0xFFFF - steer_pw;
@@ -204,16 +206,18 @@ void set_servo_PWM(void)
 // Sets the PWM of the drive motor based on horizontal and vertical tilts
 void set_drive_PWM(void)
 {
-	unsigned long temp;
+	long temp;
 	
 	// Calculate the pulsewidth given the horizontal and vertical tilts
-	temp = (long) DRIVE_PW_NEUT - (long) drive_y_gain * avg_Y + (long) drive_x_gain * abs(avg_X);
+	temp = (long) DRIVE_PW_NEUT + (long) drive_y_gain * avg_Y - (long) drive_x_gain * abs(avg_X);
 	
 	// Make sure the pulsewidth is within the bounds
 	if (temp > DRIVE_PW_MAX)
 		temp = DRIVE_PW_MAX;
 	if (temp < DRIVE_PW_MIN)
 		temp = DRIVE_PW_MIN;
+	if (temp < DRIVE_PW_NEUT * 102 / 100 && temp > DRIVE_PW_NEUT * 98 / 100)
+		temp = DRIVE_PW_NEUT;
 	
 	drive_pw = temp;
 	
