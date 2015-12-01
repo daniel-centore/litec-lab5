@@ -220,10 +220,6 @@ void set_drive_PWM(void)
 	if (temp < DRIVE_PW_MIN)
 		temp = DRIVE_PW_MIN;
 	
-	// If drive pulsewidth is close to neutral, set it to neutral
-	if (temp < DRIVE_PW_NEUT * 102 / 100 && temp > DRIVE_PW_NEUT * 98 / 100)
-		temp = DRIVE_PW_NEUT;
-	
 	drive_pw = temp;
 	
 	// Actually update drive pw
