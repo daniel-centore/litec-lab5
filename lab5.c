@@ -3,13 +3,19 @@
  * Section: 4A
  * Date: 2015
  * Filename: lab5.c
- * Description: TODO
+ * Description: In lab 5, an accelerometer was utilized to provide the feedback
+ *              signal instead of the ranger and compass. The car drove down a
+ *              ramp until it was on level ground and once it was there, it stopped.
  */
 
 #include <c8051_SDCC.h>// include files. This file is available online
 #include <stdio.h>
 #include <stdlib.h>
 #include <i2c.h>
+
+//-----------------------------------------------------------------------------
+// Constants
+//-----------------------------------------------------------------------------
 
 // Pulsewidth constants
 #define DRIVE_PW_MIN 2027
@@ -19,14 +25,11 @@
 #define STEER_PW_NEUT 2785
 #define STEER_PW_MAX 3295
 
+// Constants for the average X and Y accelerometer readings when on flat ground
 #define NEUTRAL_X (28)
 #define NEUTRAL_Y (-8)
 
 #define PCA_START 28672
-
-#define DIST_MAX (55 + 14)				// Distance to begin steering at
-#define DIST_AVOID_MIN (20 + 14)		// Distance before giving up at max steering
-#define DIST_STOP (12 + 14)				// Distance to stop under any conditions
 
 //-----------------------------------------------------------------------------
 // Function Prototypes
@@ -37,28 +40,20 @@ void PCA_Init (void);
 void XBR0_Init(void);
 void SMB0_Init(void);
 void ADC_Init(void);
-
 void Pick_S_Gain(void);
 void Pick_Heading(void);
-
 void Adjust_Wheels(void);
 void Drive_Motor(void);
-
 void Read_Accel(void);
-
 void PCA_ISR(void) __interrupt 9;
-
 void Paused_LCD(void);
 void Update_LCD(void);
 void Update_Battery(void);
-
 void set_servo_PWM(void);
 void set_drive_PWM(void);
-
 void Process(void);
 void Steering_Goal(void);
 void printDebug(void);
-
 void setGains(void);
 
 //-----------------------------------------------------------------------------
@@ -74,22 +69,22 @@ unsigned int wait = 0;                    // Elapsed 20ms ticks
 
 unsigned char new_battery_flag = 0;       // Flag to indicate new battery voltage (1s)
 unsigned char new_LCD_flag = 0;           // Flag to indicate we should update the LCD (400ms)
-unsigned char new_accel_flag = 0;
-unsigned char new_debug_flag = 0;
+unsigned char new_accel_flag = 0;         // Flag to indicate we need to read from the accelerometer (20ms)
+unsigned char new_debug_flag = 0;         // Flag to indicate we need to print to debug (60ms)
 
 unsigned char b_count = 0;                // overflow count for battery reading
 unsigned char l_count = 0;                // overflow count for LCD reading
 unsigned char d_count = 0;                // overflow count for printing to debug
 
-unsigned char i_accel = 0;
-signed int x_accel[5]; 
-signed int y_accel[5];
-signed int avg_X;
-signed int avg_Y;
+unsigned char i_accel = 0;                // The current x_accel and y_accel array positions
+signed int x_accel[5];                    // Last 5 accelerometer horizontal tilt readings
+signed int y_accel[5];                    // Last 5 accelerometer front-back pitch readings
+signed int avg_X;                         // Current average horizontal tilt reading
+signed int avg_Y;                         // 
 
-unsigned char steering_gain = 2;          // The steering gain (from keypad)
-unsigned char drive_x_gain = 2;          // The steering gain (from keypad)
-unsigned char drive_y_gain = 2;          // The steering gain (from keypad)
+unsigned char steering_gain = 0;          // The steering gain (from keypad)
+unsigned char drive_x_gain = 0;           // The steering gain (from keypad)
+unsigned char drive_y_gain = 0;           // The steering gain (from keypad)
 
 __sbit __at 0xB7 RUN;                     // Run switch
 
@@ -110,6 +105,7 @@ void main()
 	
 	printf("\r\nSTART\r\n");
 	
+	// Initialize default acceleration values to 0
 	for (i = 0; i < 4; ++i)
 	{
 		x_accel[i] = 0;
@@ -122,6 +118,7 @@ void main()
 	// Select gains from keypad
 	setGains();
 	
+	// Print current gains for reference
 	printf("Gains: S: %d Dx: %d Dy: %d\r\n", steering_gain, drive_x_gain, drive_y_gain);
 	
 	// Run main loop
@@ -134,6 +131,8 @@ void Process()
 	// Wait in neutral until switch is in run position
 	if (!RUN)
 	{
+		// Set drive and steering to neutral
+		
 		drive_pw = DRIVE_PW_NEUT;
 		steer_pw = STEER_PW_NEUT;
 		PCA0CP0 = 0xFFFF - steer_pw;
@@ -150,6 +149,7 @@ void Process()
 		}
 	}
 	
+	// Read from accelerometer and update motor and drive pwm (every 20ms)
 	if (new_accel_flag)
 	{
 		Read_Accel();
@@ -167,13 +167,14 @@ void Process()
 		new_battery_flag = 0;
 	}
 	
-	// Update LCD info every 400ms
+	// Update LCD info (every 400ms)
 	if (new_LCD_flag)
 	{
 		Update_LCD();
 		new_LCD_flag = 0;
 	}
 	
+	// Print debug info (every 60ms)
 	if (new_debug_flag)
 	{
 		printDebug();
@@ -194,9 +195,11 @@ void set_servo_PWM(void)
 		temp = STEER_PW_MAX;
 	if (temp < STEER_PW_MIN)
 		temp = STEER_PW_MIN;
+		
+	// If servo pulsewidth is close to neutral, set it to neutral
 	if (temp < STEER_PW_NEUT * 11 / 10 && temp > STEER_PW_NEUT * 9 / 10)
 		temp = STEER_PW_NEUT;
-		
+	
 	steer_pw = temp;
 	
 	// Update PCA pulsewidth steering
@@ -216,6 +219,8 @@ void set_drive_PWM(void)
 		temp = DRIVE_PW_MAX;
 	if (temp < DRIVE_PW_MIN)
 		temp = DRIVE_PW_MIN;
+	
+	// If drive pulsewidth is close to neutral, set it to neutral
 	if (temp < DRIVE_PW_NEUT * 102 / 100 && temp > DRIVE_PW_NEUT * 98 / 100)
 		temp = DRIVE_PW_NEUT;
 	
@@ -242,7 +247,7 @@ void Update_LCD(void)
 	lcd_print("dPW: %d%%\n", drive_pw);
 }
 
-// Asks user for steering gain
+// Asks user for the 3 gains
 void setGains(void)
 {
 	lcd_clear();
@@ -261,16 +266,9 @@ void setGains(void)
 	drive_y_gain = kpd_input(1);
 }
 
+// Prints out some info to the console
 void printDebug(void)
 {
-	//// Figure out the current error based on the desired and current heading
-	//signed int steer_error = (signed int) desired_heading - (signed int) current_heading;	
-	//// Shift the error to be between -1800 and 1800
-	//if (steer_error > 1800)
-		//steer_error -= 3600;
-	//else if (steer_error < -1800)
-		//steer_error += 3600;
-		
 	printf("%d, %d, %d, %d, %d\r\n"
 			, wait * 20
 			, avg_X
@@ -331,7 +329,6 @@ void Update_Battery(void)
 	AMX1SL = 7; // Set P1.n as the analog input for ADC1
 	
 	printf("# SWITCHING TO BATTERY CHANNEL...\r\n");
-	//printf("# SWITCHING TO BATTERY CHANNEL...\r\n");
 
 	ADC1CN = ADC1CN & ~0x20; // Clear the “Conversion Completed” flag
 	ADC1CN = ADC1CN | 0x10; // Initiate A/D conversion
@@ -341,27 +338,34 @@ void Update_Battery(void)
 	printf("# Battery level: %u\r\n", battery_level);
 }
 
+// Reads the next values from the accelerometer and updates the current averages
 void Read_Accel(void)
 {
 	unsigned char addr = 0x30;
 	unsigned char Data[4];
 	
+	// See if new accelerometer readings are available
 	i2c_read_data(addr, 0x27, Data, 1);
 	
+	// If not, exit
 	if ((Data[0] & 0x03) != 0x03)
 		return;
 	
+	// Read new accelerometer values
 	i2c_read_data(addr, 0x28 | 0x80, Data, 4);
 	
+	// Proceed to the next position in the arrays
 	++i_accel;
 	if (i_accel >= 4)
 		i_accel = 0;
-		
+	
+	// Set the values of the next positions in the arrays to the normalized X and Y accelerations
 	x_accel[i_accel] = ((Data[1] << 8) >> 4) - NEUTRAL_X;
 	y_accel[i_accel] = ((Data[3] << 8) >> 4) - NEUTRAL_Y;
 	
-	avg_X = (x_accel[0] + x_accel[1] + x_accel[2] + x_accel[3]) / 4;
-	avg_Y = (y_accel[0] + y_accel[1] + y_accel[2] + y_accel[3]) / 4;
+	// Set avg_X and avg_Y to the mean of the last 5 x and y accelerations, respectively
+	avg_X = (x_accel[0] + x_accel[1] + x_accel[2] + x_accel[3] + x_accel[4]) / 5;
+	avg_Y = (y_accel[0] + y_accel[1] + y_accel[2] + y_accel[3] + y_accel[4]) / 5;
 }
 
 void PCA_ISR(void) __interrupt 9
